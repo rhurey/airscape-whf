@@ -1,0 +1,7 @@
+{
+  "name": "airscape-whf-uitest",
+  "private": true,
+  "description": "jsdom harness for the fan UI. npm install && node uitest.js",
+  "scripts": { "test": "node uitest.js" },
+  "devDependencies": { "jsdom": "^24.0.0" }
+}

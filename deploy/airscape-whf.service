@@ -1,0 +1,30 @@
+# Install to /etc/systemd/system/airscape-whf.service
+#
+#   sudo cp deploy/airscape-whf.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now airscape-whf
+#
+# Strictly speaking this is belt-and-braces: `restart: unless-stopped` in the
+# compose file already brings the container back when Docker starts, provided
+# Docker itself is enabled (`systemctl enable docker`). The unit is worth having
+# anyway -- it gives you ordering against the network, a real `systemctl status`,
+# and a single place to restart the stack after a certificate renewal.
+
+[Unit]
+Description=AirScape whole house fan UI
+Documentation=https://github.com/rhurey/airscape-whf
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/airscape-whf
+ExecStart=/usr/bin/docker compose up -d --remove-orphans
+ExecStop=/usr/bin/docker compose down
+ExecReload=/usr/bin/docker compose up -d --force-recreate
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target
