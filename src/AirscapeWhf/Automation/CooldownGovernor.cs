@@ -70,14 +70,18 @@ public sealed class CooldownGovernor : BackgroundService
     private void Evaluate(FanSnapshot snapshot)
     {
         var settings = _settings.Current;
-        if (!settings.IsActive) return;
+        if (!settings.IsActive)
+        {
+            _log.LogDebug("Cooldown is disabled, exitinng.");
+            return;
+        }
 
         // Never act on a reading we don't trust. A stale snapshot is the fan's last
         // known state, not its current one, and acting on it could stop a fan that
         // someone just turned on.
         var staleAfter = Math.Max(60, _fanOptions.PollIntervalSeconds * 3);
         if (!snapshot.Online || snapshot.AgeSeconds > staleAfter) return;
-        if (snapshot.OutsideTempF is not { } outside) return;
+        if (snapshot.HouseTempF is not { } temp) return;
 
         CooldownStep? firing;
 
@@ -86,7 +90,7 @@ public sealed class CooldownGovernor : BackgroundService
             // Release steps the temperature has climbed back above. This happens even
             // while the fan is off, so the rules are armed again by the next evening.
             foreach (var step in settings.Steps)
-                if (outside >= step.BelowF + settings.ReleaseMarginF)
+                if (temp >= step.BelowF + settings.ReleaseMarginF)
                     _latched.Remove(step.BelowF);
 
             // The invariant: never start the fan.
@@ -95,7 +99,7 @@ public sealed class CooldownGovernor : BackgroundService
             firing = null;
             foreach (var step in settings.Steps)
             {
-                if (outside >= step.BelowF) continue;              // not cold enough yet
+                if (temp >= step.BelowF) continue;              // not cold enough yet
                 if (_latched.Contains(step.BelowF)) continue;      // already acted on this
                 if (step.Speed >= snapshot.Speed) continue;        // would not slow it; never raise
                 if (firing is null || step.Speed < firing.Speed)
@@ -108,9 +112,9 @@ public sealed class CooldownGovernor : BackgroundService
 
         _log.LogInformation(
             firing.Speed == 0
-                ? "Outside air is {Outside}°, below the {Threshold}° step — stopping the fan."
-                : "Outside air is {Outside}°, below the {Threshold}° step — easing from {From} to {To}.",
-            outside, firing.BelowF, snapshot.Speed, firing.Speed);
+                ? "Inside air is {Outside}°, below the {Threshold}° step — stopping the fan."
+                : "Inside air is {Outside}°, below the {Threshold}° step — easing from {From} to {To}.",
+            temp, firing.BelowF, snapshot.Speed, firing.Speed);
 
         _queue.Enqueue(new FanIntent.SetSpeed(firing.Speed));
     }
