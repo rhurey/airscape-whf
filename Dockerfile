@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 
 COPY src/AirscapeWhf/AirscapeWhf.csproj src/AirscapeWhf/
@@ -15,7 +15,7 @@ RUN dotnet publish src/AirscapeWhf/AirscapeWhf.csproj \
 # Chiseled: no shell, no package manager, non-root by default. This container talks
 # to exactly one device on the LAN and serves one page; it has no business having
 # anything else in it.
-FROM mcr.microsoft.com/dotnet/aspnet:8.0-noble-chiseled AS runtime
+FROM mcr.microsoft.com/dotnet/aspnet:10.0-noble-chiseled AS runtime
 WORKDIR /app
 COPY --from=build /app .
 
