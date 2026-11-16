@@ -1,8 +1,10 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using AirscapeWhf;
 using AirscapeWhf.Automation;
 using AirscapeWhf.Fan;
 using AirscapeWhf.Hosting;
+using AirscapeWhf.Mcp;
 
 if (args.Contains("--healthcheck")) return await ContainerSetup.HealthcheckAsync();
 
@@ -31,6 +33,9 @@ builder.Services.AddHostedService<FanPoller>();
 builder.Services.AddSingleton<CooldownStore>();
 builder.Services.AddSingleton<CooldownGovernor>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<CooldownGovernor>());
+builder.Services.AddSingleton<FanService>();
+
+var mcp = McpSetup.AddMcp(builder, configDir);
 
 builder.Services.ConfigureHttpJsonOptions(o =>
 {
@@ -40,16 +45,27 @@ builder.Services.ConfigureHttpJsonOptions(o =>
 
 var app = builder.Build();
 app.Logger.LogInformation("Listening: {Listeners}", listeners);
+if (mcp.Serve) app.Logger.LogInformation("{Mcp}", mcp.Reason);
+else app.Logger.LogWarning("{Mcp}", mcp.Reason);
 
 app.UseDefaultFiles();
 app.UseStaticFiles();
+
+if (mcp.Serve)
+{
+    // Only /mcp carries an authorization requirement; the REST API and UI stay open
+    // on the LAN as before.
+    app.UseAuthentication();
+    app.UseAuthorization();
+    McpSetup.MapMcp(app);
+}
 
 var json = new JsonSerializerOptions(JsonSerializerDefaults.Web)
 {
     DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
 };
 
-app.MapGet("/api/status", (FanStateStore store) => Results.Ok(store.Current));
+app.MapGet("/api/status", (FanService fan) => Results.Ok(fan.GetStatus()));
 
 // Server-sent events. One poller feeds every connected browser; adding a tab costs
 // this process a channel and costs the fan nothing.
@@ -75,64 +91,38 @@ app.MapGet("/api/stream", async (HttpContext ctx, FanStateStore store, Cancellat
     }
 });
 
-app.MapPost("/api/speed/{speed:int}", (int speed, FanCommandQueue queue, FanStateStore store) =>
-{
-    if (speed < 0 || speed > store.Current.MaxSpeed)
-        return Results.BadRequest(new { error = $"Speed must be between 0 and {store.Current.MaxSpeed}." });
+app.MapPost("/api/speed/{speed:int}", (int speed, FanService fan) =>
+    fan.SetSpeed(speed).Error is { } error
+        ? Results.BadRequest(new { error })
+        : Results.Accepted());
 
-    queue.Enqueue(new FanIntent.SetSpeed(speed));
+app.MapPost("/api/nudge/{steps:int}", (int steps, FanService fan) =>
+{
+    fan.Nudge(steps);
     return Results.Accepted();
 });
 
-app.MapPost("/api/nudge/{steps:int}", (int steps, FanCommandQueue queue) =>
+app.MapPost("/api/timer/{hours:int}", (int hours, FanService fan) =>
 {
-    queue.Enqueue(new FanIntent.Nudge(Math.Clamp(steps, -10, 10)));
+    fan.AddTimerHours(hours);
     return Results.Accepted();
 });
 
-app.MapPost("/api/timer/{hours:int}", (int hours, FanCommandQueue queue) =>
+app.MapPost("/api/off", (FanService fan) =>
 {
-    queue.Enqueue(new FanIntent.AddTimer(Math.Clamp(hours, 1, 12)));
+    fan.TurnOff();
     return Results.Accepted();
 });
 
-app.MapPost("/api/off", (FanCommandQueue queue) =>
+app.MapGet("/api/cooldown", (FanService fan) => Results.Ok(fan.GetCooldown()));
+
+app.MapPut("/api/cooldown", async (CooldownSettings incoming, FanService fan, CancellationToken ct) =>
 {
-    queue.Enqueue(new FanIntent.Off());
-    return Results.Accepted();
-});
+    var outcome = await fan.SetCooldownAsync(incoming, ct);
+    if (outcome.Error is { } error) return Results.BadRequest(new { error });
 
-app.MapGet("/api/cooldown", (CooldownStore store, CooldownGovernor governor, FanStateStore state) =>
-{
-    var settings = store.Current;
-    var snapshot = state.Current;
-    var next = settings.Forecast(snapshot.HouseTempF, snapshot.Speed, governor.Latched);
-
-    return Results.Ok(new
-    {
-        settings.Enabled,
-        settings.Steps,
-        settings.ReleaseMarginF,
-        maxSpeed = snapshot.MaxSpeed,
-        // What will happen next, so the UI doesn't have to reimplement the rules.
-        next = next is null ? null : new { next.BelowF, next.Speed },
-    });
-});
-
-app.MapPut("/api/cooldown", async (CooldownSettings incoming, CooldownStore store, FanStateStore state) =>
-{
-    var settings = incoming with
-    {
-        Steps = (incoming.Steps ?? Array.Empty<CooldownStep>())
-            .OrderByDescending(step => step.BelowF)
-            .ToList(),
-    };
-
-    if (settings.Validate(state.Current.MaxSpeed) is { } error)
-        return Results.BadRequest(new { error });
-
-    await store.SaveAsync(settings);
-    return Results.Ok(new { settings.Enabled, settings.Steps, settings.ReleaseMarginF });
+    var saved = outcome.Value!;
+    return Results.Ok(new { saved.Enabled, saved.Steps, saved.ReleaseMarginF });
 });
 
 // Liveness only — deliberately not readiness. This container is useful even when the
