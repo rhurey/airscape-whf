@@ -47,7 +47,10 @@ Give the fan a DHCP reservation, then:
 
 ```bash
 git clone <this> && cd airscape-whf
-$EDITOR docker-compose.yml     # set Fan__Host
+mkdir -p config data
+cp config.example/appsettings.json config/   # set Fan:Host to the controller's IP
+openssl rand -hex 32 > config/mcp-token      # optional: enables /mcp
+sudo chown 1654:1654 data                    # the container's user
 docker compose up -d
 ```
 
@@ -55,19 +58,37 @@ Open <http://localhost:8080>.
 
 ### Configuration
 
-All settings are environment variables under the `Fan__` prefix.
+The container needs exactly two directories mapped in, and nothing about your
+house lives in the image or the compose file:
 
-| Variable | Default | Notes |
+| Mount | Mode | Contents |
 | --- | --- | --- |
-| `Fan__Host` | *(required)* | IP or hostname of the controller |
-| `Fan__PollIntervalSeconds` | `20` | Each poll occupies one of the fan's two sockets |
-| `Fan__TimeoutSeconds` | `6` | Per-request timeout |
-| `Fan__MaxSpeed` | `5` | 3.5e tops out at 5; raises itself if a higher speed is observed |
-| `Fan__StepDelayMilliseconds` | `350` | Pacing between the steps of a speed change |
-| `Fan__FailuresBeforeOffline` | `3` | Consecutive failures before the UI is told it's stale |
-| `Cooldown__Path` | `/data/cooldown.json` | Where cooldown rules are saved |
-| `Kestrel__Certificates__Default__Path` | — | PEM certificate chain, for HTTPS |
-| `Kestrel__Certificates__Default__KeyPath` | — | PEM private key |
+| `/config` | read-only | `appsettings.json` (required: `Fan:Host`); `certs/fullchain.pem` + `certs/privkey.pem` (optional, enables HTTPS); `mcp-token` (optional, enables `/mcp`) |
+| `/data` | read-write | `cooldown.json`, written by the app |
+
+`config.example/appsettings.json` lists every setting with its default.
+Environment variables override the file using `__` for nesting, so
+`Fan__Host=192.168.1.50` works for a quick run without a config file. Starting
+without a `Fan:Host` exits straight away with a message saying where to set it.
+
+| Setting | Default | Notes |
+| --- | --- | --- |
+| `Fan:Host` | *(required)* | IP or hostname of the controller |
+| `Fan:PollIntervalSeconds` | `20` | Each poll occupies one of the fan's two sockets |
+| `Fan:TimeoutSeconds` | `6` | Per-request timeout |
+| `Fan:MaxSpeed` | `5` | 3.5e tops out at 5; raises itself if a higher speed is observed |
+| `Fan:StepDelayMilliseconds` | `350` | Pacing between speed steps once the doors are settled |
+| `Fan:DoorPollMilliseconds` | `2000` | How often to re-read status while the damper doors move (min 500) |
+| `Fan:DoorTimeoutSeconds` | `90` | Give up on a command if the doors never settle |
+| `Fan:FailuresBeforeOffline` | `3` | Consecutive failures before the UI is told it's stale |
+| `Cooldown:Path` | `/data/cooldown.json` | Where cooldown rules are saved |
+| `Http:Port` | `8080` | Always on |
+| `Https:Port` | `8443` | On only when the PEM pair exists |
+| `Https:CertificatePath`, `Https:KeyPath` | `/config/certs/fullchain.pem`, `privkey.pem` | Override the PEM locations |
+| `Mcp:Enabled` | `true` | Serve `/mcp` (still needs a token) |
+| `Mcp:ReadOnly` | `false` | Only the status and rule-reading tools |
+| `Mcp:Token` | — | Overrides `/config/mcp-token`; prefer the file |
+| `AIRSCAPE_CONFIG_DIR` (env) | `/config` | Where the config directory is |
 
 ## Deployment
 
@@ -75,47 +96,44 @@ All settings are environment variables under the `Fan__` prefix.
 
 The fan can never have a real certificate. This container can.
 
-Kestrel reads a PEM certificate and key directly, so a wildcard from your ACME
-pipeline needs no conversion — `*.home.hurey.com` already covers
-`fan.home.hurey.com`, since a wildcard matches one label.
+Put a PEM chain and key at `config/certs/fullchain.pem` and
+`config/certs/privkey.pem` and restart. The startup log says whether HTTPS is on,
+and if not, which file it looked for. Without them the container serves HTTP only
+rather than refusing to start.
 
-Two things reliably go wrong here, and both are addressed by
-`deploy/renew-hook.sh`:
+A wildcard from your ACME pipeline needs no conversion. `*.home.example.com`
+covers `fan.home.example.com`, since a wildcard matches one label.
+
+Two things reliably go wrong here, and `deploy/renew-hook.sh` handles both.
 
 The file extension is irrelevant. acme.sh writes PEM whatever it names the file,
-and Kestrel parses contents rather than trusting the name — `fullchain.cer` and
+and Kestrel parses contents rather than trusting the name: `fullchain.cer` and
 `fullchain.pem` are the same bytes. Check with `head -1 fullchain.cer`; if it
 says `-----BEGIN CERTIFICATE-----`, you're done thinking about it.
 
-**Permissions.** The chiseled image runs as UID 64198, which cannot read a typical
+**Permissions.** The chiseled image runs as UID 1654, which cannot read a typical
 ACME output directory. Copy the pair somewhere that user owns rather than
 loosening permissions on your PKI.
 
 **Renewal.** Kestrel reads the certificate once at startup and does not watch the
 file, so a renewal without a restart silently serves the old one until it expires.
 
-With acme.sh, declare both once and renewals take care of themselves:
+`deploy/renew-hook.sh <acme-output-dir> [install-dir]` does the job for certbot,
+acme.sh, or anything else. It accepts either naming convention, checks the files
+really are PEM, installs them into `config/certs/` with owner 1654 and mode 0400 on
+the key, and restarts the service. With acme.sh:
 
 ```bash
-acme.sh --install-cert -d '*.home.hurey.com' --ecc \
-  --fullchain-file /etc/ssl/airscape/fullchain.pem \
-  --key-file       /etc/ssl/airscape/privkey.pem \
-  --reloadcmd      "chown 64198:64198 /etc/ssl/airscape/*.pem \
-                    && chmod 400 /etc/ssl/airscape/privkey.pem \
-                    && systemctl reload airscape-whf"
+acme.sh --install-cert -d '*.home.example.com' --ecc \
+  --reloadcmd "/opt/airscape-whf/deploy/renew-hook.sh '/root/.acme.sh/*.home.example.com_ecc'"
 ```
 
-Drop `--ecc` if your cert is RSA. Note that acme.sh stores wildcards under a
-directory with a literal asterisk, and appends `_ecc` for elliptic-curve certs —
-`~/.acme.sh/*.home.hurey.com_ecc/` — which is a common source of "file not found".
+acme.sh stores wildcards under a directory with a literal asterisk, and appends
+`_ecc` for elliptic-curve certs. That is a common source of "file not found".
 
-For certbot or anything else, `deploy/renew-hook.sh <acme-output-dir>` does the
-same job: it accepts either naming convention, verifies the file really is PEM,
-installs with the right owner and mode, and restarts the container.
-
-Then point DNS at the host — an A record for `fan.home.hurey.com` — and
-<https://fan.home.hurey.com:8443> works with no browser warning. Map the port to
-443 in `docker-compose.yml` if you'd rather drop it from the URL.
+Then point DNS at the host, with an A record for `fan.home.example.com`. The
+compose file maps 8443 to 443, so <https://fan.home.example.com> works with no
+browser warning.
 
 HTTP stays open on 8080 on purpose. Forcing a redirect breaks simple `curl`
 integrations on a trusted LAN and buys nothing.
@@ -127,11 +145,18 @@ Cooldown rules are saved to `/data/cooldown.json`, backed by a bind mount at
 owner before first start:
 
 ```bash
-mkdir -p data && sudo chown 64198:64198 data
+mkdir -p data && sudo chown 1654:1654 data
 ```
 
 Without a writable mount the rules still work, but are lost on restart and the
 log says so once.
+
+### Health
+
+The image defines a `HEALTHCHECK` that runs the app in `--healthcheck` mode, which
+does one local GET of `/healthz`. The chiseled image has no shell or curl, so the
+app checks itself. It is liveness only: the service is doing its job even when the
+fan is unreachable, so fan state deliberately does not fail it.
 
 ### Starting on boot
 
@@ -146,7 +171,7 @@ For explicit control — ordering against the network, a real `systemctl status`
 and one place to restart after a renewal — install the unit:
 
 ```bash
-sudo cp -r . /opt/airscape-whf
+sudo cp -r . /opt/airscape-whf   # including your config/ and data/
 sudo cp deploy/airscape-whf.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now airscape-whf
@@ -209,13 +234,65 @@ simulated night as the house cools and warms again.
 | `GET` | `/api/stream` | SSE, pushes on every state change |
 | `POST` | `/api/speed/{0..max}` | Absolute speed |
 | `POST` | `/api/nudge/{±n}` | Relative speed |
-| `POST` | `/api/timer/{hours}` | Add timer hours |
+| `POST` | `/api/timer/{hours}` | Add timer hours (starts an idle fan at speed 1) |
 | `POST` | `/api/off` | Off |
 | `GET` | `/api/cooldown` | Current rules, plus which step fires next |
 | `PUT` | `/api/cooldown` | Replace the rules |
 | `GET` | `/healthz` | Liveness |
+| `POST` | `/mcp` | MCP server, bearer token required (see below) |
 
-Commands return `202 Accepted`. They are queued, not synchronous — see below.
+Commands return `202 Accepted`. They are queued, not synchronous (see below). While
+one is in flight the snapshot carries `targetSpeed`, the speed it is heading for,
+which is the only way to tell what the fan is about to do while the damper doors
+make the controller report 0. It is absent once the fan has arrived.
+
+The REST API and UI have no auth and assume a trusted LAN. Only `/mcp` is gated.
+
+## MCP
+
+The same process serves a [Model Context Protocol](https://modelcontextprotocol.io)
+endpoint at `/mcp` (Streamable HTTP, stateless), so an agent can check the fan and
+drive it. The tools call the same state and command queue as the REST API, so they
+cost the controller nothing extra.
+
+| Tool | Does |
+| --- | --- |
+| `get_fan_status` | Speed, target, doors, timer, temperatures, airflow, power, verdict |
+| `get_cooldown_rules` | The rules and which step fires next |
+| `set_fan_speed` | Absolute speed, 0 to max. Returns once queued, before the fan arrives |
+| `turn_fan_off` | Off |
+| `add_timer_hours` | 1–12 hours. Starts the fan if it's off |
+| `set_cooldown_rules` | Replace the rules. Invalid ladders are rejected with the reason |
+
+`Mcp:ReadOnly=true` serves only the two `get_` tools.
+
+**A token is required.** Without one, `/mcp` is not served at all and the startup
+log says how to create one:
+
+```bash
+openssl rand -hex 32 > config/mcp-token   # at least 32 characters
+docker compose restart
+```
+
+Every request needs `Authorization: Bearer <token>`; anything else gets 401. The
+token is read once at startup, so rotating it means replacing the file and
+restarting. Prefer the HTTPS port when certificates are configured: a bearer
+token sent over plain HTTP can be read by anyone on the LAN.
+
+Claude Code:
+
+```bash
+claude mcp add --transport http airscape https://fan.home.example.com/mcp \
+  --header "Authorization: Bearer $(cat config/mcp-token)"
+```
+
+Clients that only speak stdio can bridge with
+`npx mcp-remote https://fan.home.example.com/mcp --header "Authorization: Bearer <token>"`.
+
+Auth is an ordinary ASP.NET Core authentication scheme plus a policy named `Mcp`
+(`src/AirscapeWhf/Mcp/McpSetup.cs`). Moving to OAuth2 with Entra ID later means
+registering JwtBearer and pointing that policy at it. The endpoint and tools stay
+as they are.
 
 ## How it works
 
@@ -361,23 +438,41 @@ does.
 
 ### Damper doors lie about speed
 
-While the doors are moving the controller reports `fanspd` as 0 regardless of the
-speed it is heading for. A stepper that believes it will issue speed-up commands
-for the ~30 seconds the doors take and overshoot badly, so `FanCommandQueue`
-trusts its own arithmetic while `doorinprocess` is set and the controller's report
-only once the doors have settled.
+Starting from off, the damper doors take about 30 seconds to open. While they
+move, the controller reports `fanspd` as 0 whatever speed it is heading for, and
+does not honour speed-up or speed-down commands. An earlier version stepped on a
+fixed 350 ms delay, so from off every step after the first was sent into the void
+and the fan stopped at speed 1.
+
+`FanCommandQueue` now only steps on a *settled* reading. It starts from a fresh
+status read (the wall switch or remote may have moved the speed), and whenever the
+doors are moving it re-reads status every `DoorPollMilliseconds` until they stop.
+Then it steps the remainder from the speed the controller actually reports. Off is
+the exception: it is sent immediately, even mid door travel, and sent once more if
+the fan is still running when things settle. If the doors never settle within
+`DoorTimeoutSeconds` the command is abandoned and logged.
+
+The door polls share `FanClient`'s single-flight gate with the regular poller, so
+the controller still never sees more than one connection from us.
+
+This has only been exercised against the mock and the unit tests so far. The first
+real run is next cooling season.
 
 ## Developing
 
-`tools/mockfan.py` stands in for the controller, and reproduces its awkward
-parts on purpose — the two-socket cap with silent drops, relative-only commands,
-30-second damper doors, the malformed `server_response` buffer, and optionally
-the string-typed JSON.
+Needs the .NET 10 SDK.
 
 ```bash
-python3 tools/mockfan.py --port 8081
-Fan__Host=localhost:8081 dotnet run --project src/AirscapeWhf
+dotnet test                                   # unit + endpoint tests
+python3 tools/mockfan.py --port 8081 --door-seconds 8
+Fan__Host=localhost:8081 Http__Port=5099 AIRSCAPE_CONFIG_DIR=./config \
+  Cooldown__Path=./data/cooldown.json dotnet run --project src/AirscapeWhf
 ```
+
+`tools/mockfan.py` stands in for the controller, and reproduces its awkward
+parts on purpose: the two-socket cap with silent drops, relative-only commands,
+damper doors that report speed 0 and ignore speed commands while they move, the
+malformed `server_response` buffer, and optionally the string-typed JSON.
 
 To see the failure mode this project exists to fix, fire six parallel requests
 straight at the mock and watch four get dropped:
@@ -393,23 +488,23 @@ Then do the same through the service and watch all six succeed.
 
 Useful flags: `--sockets 1` to be really unkind, `--stringify` to emit the
 string-typed JSON some firmware produces, `--clean-json` to suppress the
-malformed field, `--latency` to simulate a slow board.
+malformed field, `--latency` to simulate a slow board, `--door-seconds` to shorten
+the door wait, and `--door-commands accept` to model firmware that queues speed
+commands during door travel instead of ignoring them.
 
 ## Status
 
-The front end is tested — `tools/uitest.js` drives it under jsdom across eight
-scenarios including sensor-less fans, stale state, larger models, and the
-cooldown editor. The JSON repair is tested against the verbatim hardware capture
-and adversarial variants via `tools/salvage_check.py`, and the cooldown state
-machine via `tools/cooldown_check.py`.
+`dotnet test` covers the door-aware stepper against a scripted fake controller,
+the cooldown forecast, and the MCP endpoint end to end (auth, tool list, read-only
+mode, validation errors). `docker build --target test .` runs the same suite, and
+the default image build runs it too.
 
-**The C# has not been compiled**; it was written without a .NET SDK to hand. The
-repair *algorithm* is verified, because the Python port mirrors it line for
-line, but the C# transcription of it is not. Expect to fix a few things on first
-`dotnet build`.
-
-Targets `net8.0`. Bumping the TFM and the two image tags in the `Dockerfile` is
-the whole upgrade.
+The front end is tested by `tools/uitest.js`, which drives it under jsdom across
+sensor-less fans, stale state, door travel, larger models, and the cooldown editor
+(`cd tools && npm install && node uitest.js`). The JSON repair is tested against
+the verbatim hardware capture and adversarial variants via
+`tools/salvage_check.py`, and the cooldown state machine via
+`tools/cooldown_check.py`.
 
 ## Not done
 
@@ -419,4 +514,5 @@ the whole upgrade.
   would want a time-series store rather than this cache.
 - No scheduling. "Run from 10pm" or "only on weeknights" belongs in Home
   Assistant against this API, not here.
-- No auth. Assumes a trusted LAN.
+- No auth on the REST API or UI; they assume a trusted LAN. `/mcp` uses a static
+  bearer token; OAuth2 with Entra ID is the planned next step.
