@@ -14,6 +14,16 @@ public enum FanCommand
 }
 
 /// <summary>
+/// The two operations the controller supports. Exists so the stepping logic in
+/// <see cref="FanCommandQueue"/> can be exercised against a scripted fake.
+/// </summary>
+public interface IFanClient
+{
+    Task<FanRawStatus> GetStatusAsync(CancellationToken ct);
+    Task<FanRawStatus> SendCommandAsync(FanCommand command, CancellationToken ct);
+}
+
+/// <summary>
 /// The only thing in this process that is allowed to open a socket to the controller.
 /// <para>
 /// The Microchip TCP/IP stack the fan runs is compiled with a fixed, very small number
@@ -25,7 +35,7 @@ public enum FanCommand
 /// kept alive, so the fan never sees more than one connection from us at a time.
 /// </para>
 /// </summary>
-public sealed class FanClient : IDisposable
+public sealed class FanClient : IFanClient, IDisposable
 {
     private static readonly JsonSerializerOptions JsonOptions = CreateJsonOptions();
 

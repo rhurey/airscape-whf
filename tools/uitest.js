@@ -252,6 +252,37 @@ console.log("\n[13] cooldown: no sensor means nothing can fire");
   check("says so plainly", t.$("forecast").textContent.includes("No outside reading"), true);
 }
 
+console.log("\n[15] starting from off: target holds through the door window");
+{
+  const t = boot();
+  t.push({ ...base, speed: 0, running: false });
+  t.$("steps").children[2].dispatchEvent(new t.w.MouseEvent("click", { bubbles: true }));
+  // Doors opening: the controller reports 0, the server reports where it's going.
+  t.push({ ...base, speed: 0, running: false, doorMoving: true, targetSpeed: 3 });
+  check("target pending during doors", t.$("steps").children[2].className.includes("is-pending"), true);
+  check("turn-off enabled during doors", t.$("turn-off").disabled, false);
+  check("door notice names the destination",
+        t.$("notice").textContent.includes("go to speed 3"), true);
+
+  // Long after any local guess would have expired, the server's target still rules.
+  const realNow = Date.now;
+  t.w.Date.now = () => realNow() + 60000;
+  t.push({ ...base, speed: 0, running: false, doorMoving: true, targetSpeed: 3 });
+  check("still pending after 60s", t.$("steps").children[2].className.includes("is-pending"), true);
+
+  t.push({ ...base, speed: 3 });
+  check("lands on 3", t.$("steps").children[2].className.includes("is-on"), true);
+  check("pending gone", [...t.$("steps").children].some(b => b.className.includes("is-pending")), false);
+}
+
+console.log("\n[16] doors closing after Off");
+{
+  const t = boot();
+  t.push({ ...base, speed: 0, running: false, doorMoving: true, targetSpeed: 0 });
+  check("closing notice", t.$("notice").textContent.includes("closing"), true);
+  check("no speed pending", [...t.$("steps").children].some(b => b.className.includes("is-pending")), false);
+}
+
 console.log("\n[14] larger model reports a higher max speed");
 {
   const t = boot();

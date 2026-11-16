@@ -9,7 +9,9 @@ It deliberately reproduces the controller's awkward parts:
     refused (so a misbehaving client stalls on SYN retransmit, exactly as it
     does against the real device)
   * relative-only speed commands
-  * damper doors that take ~30 seconds to move
+  * damper doors that take ~30 seconds to move, during which the reported speed
+    is 0 and speed up/down commands are not honoured (--door-commands accept
+    models firmware that queues them instead)
   * numbers emitted as JSON strings, which some firmware revisions do
   * a `server_response` field carrying the exact 20-byte binary buffer captured
     from real 2.15.1 hardware, which makes the document invalid JSON
@@ -41,8 +43,11 @@ WATTS_BY_SPEED = [0, 21, 48, 88, 130, 180]
 
 
 class Fan:
-    def __init__(self, stringify: bool, clean_json: bool, random_junk: bool = False):
+    def __init__(self, stringify: bool, clean_json: bool, random_junk: bool = False,
+                 door_seconds: float = 30.0, door_commands: str = "ignore"):
         self.lock = threading.Lock()
+        self.door_seconds = door_seconds
+        self.door_commands = door_commands
         self.speed = 0
         self.timer_minutes = 0
         self.door_until = 0.0
@@ -71,9 +76,15 @@ class Fan:
                             self.speed = 0
         threading.Thread(target=drift, daemon=True).start()
 
+    def doors_moving(self) -> bool:
+        return time.time() < self.door_until
+
     def command(self, direction: int):
         with self.lock:
             before = self.speed
+            if direction in (1, 3) and self.doors_moving() and self.door_commands == "ignore":
+                print(f"  fan  IGNORED dir={direction}: damper doors are moving")
+                return
             if direction == 1:
                 self.speed = min(MAX_SPEED, self.speed + 1)
             elif direction == 2:
@@ -87,13 +98,18 @@ class Fan:
                 self.timer_minutes = 0
             # Doors move whenever we cross the on/off boundary.
             if (before == 0) != (self.speed == 0):
-                self.door_until = time.time() + 30
+                self.door_until = time.time() + self.door_seconds
+            print(f"  fan  dir={direction}: speed {before} -> {self.speed}"
+                  f"{'  (doors moving)' if self.doors_moving() else ''}")
 
     def status(self) -> dict:
         with self.lock:
+            moving = self.doors_moving()
             return {
-                "fanspd": self.speed,
-                "doorinprocess": 1 if time.time() < self.door_until else 0,
+                # The real controller reports 0 while the doors travel, whatever
+                # speed it is heading for.
+                "fanspd": 0 if moving else self.speed,
+                "doorinprocess": 1 if moving else 0,
                 "timeremaining": self.timer_minutes,
                 "macaddr": "60:CB:FB:00:13:7D",
                 "ipaddr": "192.168.36.193",
@@ -302,19 +318,26 @@ def main():
     ap.add_argument("--random-junk", action="store_true",
                     help="vary the server_response bytes each read instead of using "
                          "the constant captured from real hardware")
+    ap.add_argument("--door-seconds", type=float, default=30.0,
+                    help="how long the damper doors take to move (default: 30)")
+    ap.add_argument("--door-commands", choices=["ignore", "accept"], default="ignore",
+                    help="what speed commands do during door travel: 'ignore' (default, "
+                         "like the real controller) or 'accept'")
     ap.add_argument("--clean-json", action="store_true",
                     help="omit the malformed server_response field that real 2.15.1 "
                          "firmware emits (default: reproduce it)")
     args = ap.parse_args()
 
     Handler.fan = Fan(stringify=args.stringify, clean_json=args.clean_json,
-                      random_junk=args.random_junk)
+                      random_junk=args.random_junk, door_seconds=args.door_seconds,
+                      door_commands=args.door_commands)
     Handler.latency = args.latency
     CappedServer.max_sockets = args.sockets
 
     server = CappedServer(("0.0.0.0", args.port), Handler)
     print(f"mock 3.5eWHF on http://localhost:{args.port}  "
           f"(connection cap: {args.sockets}, latency: {args.latency}s, "
+          f"doors: {args.door_seconds:g}s/{args.door_commands}, "
           f"json: {'valid' if args.clean_json else 'malformed, like the real thing'})")
     print(f"  try:  curl http://localhost:{args.port}/status.json.cgi")
     try:

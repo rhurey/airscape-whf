@@ -9,12 +9,12 @@ namespace AirscapeWhf.Fan;
 /// </summary>
 public sealed class FanPoller : BackgroundService
 {
-    private readonly FanClient _client;
+    private readonly IFanClient _client;
     private readonly FanStateStore _store;
     private readonly FanOptions _options;
     private readonly ILogger<FanPoller> _log;
 
-    public FanPoller(FanClient client, FanStateStore store, IOptions<FanOptions> options, ILogger<FanPoller> log)
+    public FanPoller(IFanClient client, FanStateStore store, IOptions<FanOptions> options, ILogger<FanPoller> log)
     {
         _client = client;
         _store = store;

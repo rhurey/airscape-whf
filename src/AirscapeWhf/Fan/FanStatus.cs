@@ -23,8 +23,21 @@ public sealed class FanOptions
     /// </summary>
     public int MaxSpeed { get; set; } = 5;
 
-    /// <summary>Delay between the discrete step commands that make up a speed change.</summary>
+    /// <summary>
+    /// Delay between the discrete step commands that make up a speed change, once the
+    /// damper doors are settled.
+    /// </summary>
     public int StepDelayMilliseconds { get; set; } = 350;
+
+    /// <summary>
+    /// How often to re-read status while the damper doors are moving. The controller
+    /// does not honour speed commands during door travel, so the stepper waits on this
+    /// rather than on a fixed delay. Floored at 500 ms.
+    /// </summary>
+    public int DoorPollMilliseconds { get; set; } = 2000;
+
+    /// <summary>Give up waiting for the doors after this long. They normally take ~30 s.</summary>
+    public int DoorTimeoutSeconds { get; set; } = 90;
 
     /// <summary>Consecutive poll failures before the UI is told the fan is unreachable.</summary>
     public int FailuresBeforeOffline { get; set; } = 3;

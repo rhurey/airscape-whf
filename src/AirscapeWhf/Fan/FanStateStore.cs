@@ -36,6 +36,28 @@ public sealed class FanStateStore
 
     public int SubscriberCount => _subscribers.Count;
 
+    /// <summary>The speed a command in progress is heading for, or null.</summary>
+    public int? TargetSpeed
+    {
+        get { lock (_sync) return _current.TargetSpeed; }
+    }
+
+    /// <summary>
+    /// Records where a command in progress is heading, so the UI can show it while the
+    /// damper doors make the controller report speed 0. Broadcasts on change.
+    /// </summary>
+    public void SetTarget(int? target)
+    {
+        FanSnapshot snapshot;
+        lock (_sync)
+        {
+            if (_current.TargetSpeed == target) return;
+            _current = _current with { TargetSpeed = target };
+            snapshot = _current.WithAge(DateTimeOffset.UtcNow);
+        }
+        Broadcast(snapshot);
+    }
+
     public void RecordSuccess(FanRawStatus raw)
     {
         FanSnapshot snapshot;
@@ -43,6 +65,14 @@ public sealed class FanStateStore
         {
             _consecutiveFailures = 0;
             snapshot = FanSnapshot.From(raw, Math.Max(_options.MaxSpeed, _current.MaxSpeed), DateTimeOffset.UtcNow);
+
+            // Carry the target across readings, and drop it once a settled reading
+            // shows the fan has arrived. A reading taken while the doors move says
+            // nothing about where the fan is going, so it never clears the target.
+            var target = _current.TargetSpeed;
+            if (target is not null && !snapshot.DoorMoving && snapshot.Speed == target) target = null;
+            snapshot = snapshot with { TargetSpeed = target };
+
             _current = snapshot;
         }
         Broadcast(snapshot);

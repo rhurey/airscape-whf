@@ -3,8 +3,12 @@
 **/.vs/
 **/.vscode/
 **/*.user
+**/node_modules/
 .git/
 .gitignore
 tools/
+config/
+data/
+certs/
 README.md
 docker-compose.yml

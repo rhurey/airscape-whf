@@ -6,7 +6,8 @@ using AirscapeWhf.Fan;
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.Configure<FanOptions>(builder.Configuration.GetSection(FanOptions.Section));
-builder.Services.AddSingleton<FanClient>();
+builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddSingleton<IFanClient, FanClient>();
 builder.Services.AddSingleton<FanStateStore>();
 builder.Services.AddSingleton<FanCommandQueue>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<FanCommandQueue>());

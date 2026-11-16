@@ -21,23 +21,32 @@ public abstract record FanIntent
 /// therefore coalesced — only the newest destination survives — and a sequence in
 /// flight is abandoned the moment a newer intent lands.
 /// </para>
+/// <para>
+/// Starting from off, the damper doors take ~30 s to open. While they move the
+/// controller reports speed 0 and does not honour speed commands, so stepping on a
+/// fixed delay sends every command into the void. This class therefore only steps on
+/// a <i>settled</i> reading: it waits for the doors, reads where the fan actually is,
+/// and steps the remainder.
+/// </para>
 /// </summary>
 public sealed class FanCommandQueue : BackgroundService
 {
     private readonly Channel<FanIntent> _intents = Channel.CreateUnbounded<FanIntent>(
         new UnboundedChannelOptions { SingleReader = true, SingleWriter = false });
 
-    private readonly FanClient _client;
+    private readonly IFanClient _client;
     private readonly FanStateStore _store;
     private readonly FanOptions _options;
+    private readonly TimeProvider _time;
     private readonly ILogger<FanCommandQueue> _log;
 
-    public FanCommandQueue(FanClient client, FanStateStore store, IOptions<FanOptions> options,
-        ILogger<FanCommandQueue> log)
+    public FanCommandQueue(IFanClient client, FanStateStore store, IOptions<FanOptions> options,
+        TimeProvider time, ILogger<FanCommandQueue> log)
     {
         _client = client;
         _store = store;
         _options = options.Value;
+        _time = time;
         _log = log;
     }
 
@@ -62,7 +71,7 @@ public sealed class FanCommandQueue : BackgroundService
             var intent = Coalesce(first);
             try
             {
-                await ExecuteIntentAsync(intent, stoppingToken).ConfigureAwait(false);
+                await RunIntentAsync(intent, stoppingToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -110,25 +119,54 @@ public sealed class FanCommandQueue : BackgroundService
         return result;
     }
 
+    /// <summary>
+    /// Runs one intent and owns the published target. A superseded intent leaves the
+    /// target for its successor to replace; anything else — done, gave up, or failed —
+    /// clears it so the UI stops showing a destination nobody is heading for.
+    /// </summary>
+    internal async Task RunIntentAsync(FanIntent intent, CancellationToken ct)
+    {
+        try
+        {
+            await ExecuteIntentAsync(intent, ct).ConfigureAwait(false);
+        }
+        catch
+        {
+            _store.SetTarget(null);
+            throw;
+        }
+
+        if (!Superseded()) _store.SetTarget(null);
+    }
+
     private async Task ExecuteIntentAsync(FanIntent intent, CancellationToken ct)
     {
         switch (intent)
         {
             case FanIntent.Off:
-                await IssueAsync(FanCommand.Off, ct).ConfigureAwait(false);
+                _store.SetTarget(0);
+                await TurnOffAsync(ct).ConfigureAwait(false);
                 break;
 
             case FanIntent.AddTimer add:
-                for (var i = 0; i < Math.Clamp(add.Hours, 1, 12); i++)
-                {
-                    if (Superseded()) return;
-                    await IssueAsync(FanCommand.AddTimerHour, ct).ConfigureAwait(false);
-                    await PaceAsync(ct).ConfigureAwait(false);
-                }
+                await AddTimerAsync(add.Hours, ct).ConfigureAwait(false);
                 break;
 
             case FanIntent.Nudge nudge:
-                await StepToAsync(_store.Current.Speed + nudge.Steps, ct).ConfigureAwait(false);
+                // During door travel the reported speed is 0, so nudge from where we are
+                // heading if anything is in flight, otherwise from a settled reading.
+                int from;
+                if (_store.TargetSpeed is { } target)
+                {
+                    from = target;
+                }
+                else
+                {
+                    var settled = await ReadSettledAsync(ct).ConfigureAwait(false);
+                    if (settled is null) return;
+                    from = settled.FanSpeed ?? 0;
+                }
+                await StepToAsync(from + nudge.Steps, ct).ConfigureAwait(false);
                 break;
 
             case FanIntent.SetSpeed set:
@@ -139,22 +177,27 @@ public sealed class FanCommandQueue : BackgroundService
 
     private async Task StepToAsync(int target, CancellationToken ct)
     {
-        var current = _store.Current;
-        target = Math.Clamp(target, 0, current.MaxSpeed);
+        var maxSpeed = _store.Current.MaxSpeed;
+        target = Math.Clamp(target, 0, maxSpeed);
+        _store.SetTarget(target);
 
         if (target == 0)
         {
-            await IssueAsync(FanCommand.Off, ct).ConfigureAwait(false);
+            await TurnOffAsync(ct).ConfigureAwait(false);
             return;
         }
 
-        // Hard iteration cap. If our idea of the current speed is wrong — the wall
-        // switch or the handheld remote can move it under us — we must not loop forever
-        // chasing a target we can't reach.
-        var budget = current.MaxSpeed + 2;
-        var speed = current.Speed;
+        // Start from a fresh reading rather than the cache. The wall switch and the
+        // handheld remote can move the speed between polls, and stepping from a stale
+        // number is how a stepper overshoots.
+        var raw = await ReadAsync(ct).ConfigureAwait(false);
 
-        for (var i = 0; i < budget && speed != target; i++)
+        // Hard cap. If something keeps moving the speed under us we must not loop
+        // forever chasing a target we can't reach.
+        var budget = maxSpeed + 2;
+        var commands = 0;
+
+        while (true)
         {
             if (Superseded())
             {
@@ -162,23 +205,115 @@ public sealed class FanCommandQueue : BackgroundService
                 return;
             }
 
-            var command = speed < target ? FanCommand.SpeedUp : FanCommand.SpeedDown;
-            var raw = await IssueAsync(command, ct).ConfigureAwait(false);
+            if (DoorsMoving(raw))
+            {
+                if (await WaitForDoorsAsync(ct).ConfigureAwait(false) is not { } settled) return;
+                raw = settled;
+                continue;
+            }
 
-            // Trust the controller's own report over our arithmetic -- except while
-            // the damper doors are moving, when it reports 0 regardless of the speed
-            // it is heading for. Believing that would have us issue speed-up commands
-            // repeatedly for the ~30s the doors take, and overshoot badly.
-            var stepped = speed + (command == FanCommand.SpeedUp ? 1 : -1);
-            var doorsMoving = raw.DoorInProcess is not null and not 0;
-            speed = doorsMoving ? stepped : raw.FanSpeed ?? stepped;
+            var speed = raw.FanSpeed ?? 0;
+            if (speed == target) return;
 
-            if (speed != target)
-                await PaceAsync(ct).ConfigureAwait(false);
+            if (commands >= budget)
+            {
+                _log.LogInformation("Stopped at speed {Speed} while stepping to {Target}", speed, target);
+                return;
+            }
+
+            raw = await IssueAsync(speed < target ? FanCommand.SpeedUp : FanCommand.SpeedDown, ct)
+                .ConfigureAwait(false);
+            commands++;
+
+            // A step that starts the doors is followed by a wait, not a pace.
+            if (!DoorsMoving(raw)) await PaceAsync(ct).ConfigureAwait(false);
         }
+    }
 
-        if (speed != target)
-            _log.LogInformation("Stopped at speed {Speed} while stepping to {Target}", speed, target);
+    /// <summary>
+    /// Off always wins: it is sent immediately, even mid door travel, and repeated once
+    /// if the fan turns out to still be running once things settle.
+    /// </summary>
+    private async Task TurnOffAsync(CancellationToken ct)
+    {
+        var raw = await IssueAsync(FanCommand.Off, ct).ConfigureAwait(false);
+
+        var settled = DoorsMoving(raw) ? await WaitForDoorsAsync(ct).ConfigureAwait(false) : raw;
+        if (settled is null || Superseded()) return;
+
+        if (settled.FanSpeed is > 0)
+        {
+            _log.LogInformation("Fan still at speed {Speed} after Off; sending it again", settled.FanSpeed);
+            await IssueAsync(FanCommand.Off, ct).ConfigureAwait(false);
+        }
+    }
+
+    private async Task AddTimerAsync(int hours, CancellationToken ct)
+    {
+        // A timer hour has no destination speed (it starts an idle fan at 1), so there
+        // is nothing to show as a target.
+        _store.SetTarget(null);
+
+        if (_store.Current.DoorMoving && await WaitForDoorsAsync(ct).ConfigureAwait(false) is null) return;
+
+        for (var i = 0; i < Math.Clamp(hours, 1, 12); i++)
+        {
+            if (Superseded()) return;
+            var raw = await IssueAsync(FanCommand.AddTimerHour, ct).ConfigureAwait(false);
+
+            // The first hour on an idle fan starts it and opens the doors.
+            if (DoorsMoving(raw))
+            {
+                if (await WaitForDoorsAsync(ct).ConfigureAwait(false) is null) return;
+            }
+            else
+            {
+                await PaceAsync(ct).ConfigureAwait(false);
+            }
+        }
+    }
+
+    /// <summary>A fresh reading, waited on until the doors are still. Null if superseded or timed out.</summary>
+    private async Task<FanRawStatus?> ReadSettledAsync(CancellationToken ct)
+    {
+        var raw = await ReadAsync(ct).ConfigureAwait(false);
+        return DoorsMoving(raw) ? await WaitForDoorsAsync(ct).ConfigureAwait(false) : raw;
+    }
+
+    /// <summary>
+    /// Re-reads status until the damper doors stop. Returns the first settled reading,
+    /// or null when a newer intent arrives or the doors never settle.
+    /// </summary>
+    private async Task<FanRawStatus?> WaitForDoorsAsync(CancellationToken ct)
+    {
+        var poll = TimeSpan.FromMilliseconds(Math.Max(500, _options.DoorPollMilliseconds));
+        var timeout = TimeSpan.FromSeconds(Math.Max(1, _options.DoorTimeoutSeconds));
+        var deadline = _time.GetUtcNow() + timeout;
+
+        while (true)
+        {
+            if (Superseded()) return null;
+
+            if (_time.GetUtcNow() >= deadline)
+            {
+                _log.LogWarning("Damper doors still moving after {Timeout}s; giving up on this command",
+                    timeout.TotalSeconds);
+                return null;
+            }
+
+            await Task.Delay(poll, _time, ct).ConfigureAwait(false);
+            if (Superseded()) return null;
+
+            var raw = await ReadAsync(ct).ConfigureAwait(false);
+            if (!DoorsMoving(raw)) return raw;
+        }
+    }
+
+    private async Task<FanRawStatus> ReadAsync(CancellationToken ct)
+    {
+        var raw = await _client.GetStatusAsync(ct).ConfigureAwait(false);
+        _store.RecordSuccess(raw);
+        return raw;
     }
 
     private async Task<FanRawStatus> IssueAsync(FanCommand command, CancellationToken ct)
@@ -190,8 +325,10 @@ public sealed class FanCommandQueue : BackgroundService
         return raw;
     }
 
+    private static bool DoorsMoving(FanRawStatus raw) => raw.DoorInProcess is not null and not 0;
+
     private bool Superseded() => Volatile.Read(ref _pending) > 0;
 
     private Task PaceAsync(CancellationToken ct)
-        => Task.Delay(Math.Max(50, _options.StepDelayMilliseconds), ct);
+        => Task.Delay(TimeSpan.FromMilliseconds(Math.Max(50, _options.StepDelayMilliseconds)), _time, ct);
 }

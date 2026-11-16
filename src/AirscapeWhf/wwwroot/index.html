@@ -545,18 +545,31 @@
     }
   }
 
-  function renderSteps(s) {
-    const showPending = pendingSpeed !== null && Date.now() < pendingUntil && pendingSpeed !== s.speed;
-    if (pendingSpeed !== null && (pendingSpeed === s.speed || Date.now() >= pendingUntil)) {
+  // Where the fan is heading. The server publishes targetSpeed for as long as a
+  // command is in flight, including the ~30s the damper doors take, during which
+  // the controller reports speed 0. The local guess only bridges the moment between
+  // a click and the first snapshot that carries the server's target.
+  function destination(s) {
+    if (typeof s.targetSpeed === "number") {
       pendingSpeed = null;
+      return s.targetSpeed;
     }
+    if (pendingSpeed !== null && Date.now() < pendingUntil) return pendingSpeed;
+    pendingSpeed = null;
+    return null;
+  }
+
+  function renderSteps(s) {
+    const target = destination(s);
+    const showPending = target !== null && target !== s.speed;
     [...el.steps.children].forEach((b, i) => {
       const n = i + 1;
       b.classList.toggle("is-on", !showPending && s.speed === n);
-      b.classList.toggle("is-pending", showPending && pendingSpeed === n);
+      b.classList.toggle("is-pending", showPending && target === n);
       b.setAttribute("aria-pressed", String(s.speed === n));
     });
-    el.turnOff.disabled = s.speed === 0 && !showPending;
+    // Off must stay reachable while the doors open, when the reported speed is 0.
+    el.turnOff.disabled = !(s.speed > 0 || s.doorMoving || target > 0);
   }
 
   function renderMetrics(s) {
@@ -610,7 +623,13 @@
       el.notice.textContent = `Can't reach the controller — ${s.lastError} Readings below are from ${fmtAge(s.ageSeconds)}; controls won't take effect until it answers.`;
       el.notice.classList.add("is-shown");
     } else if (s.doorMoving) {
-      el.notice.textContent = "Damper doors are opening or closing. This takes about 30 seconds.";
+      const t = s.targetSpeed;
+      el.notice.textContent =
+        typeof t === "number" && t > 0
+          ? `Damper doors are opening. The fan will go to speed ${t} when they finish, in about 30 seconds.`
+          : t === 0
+            ? "Damper doors are closing. This takes about 30 seconds."
+            : "Damper doors are opening or closing. This takes about 30 seconds.";
       el.notice.classList.add("is-shown");
     } else if (s.interlocked) {
       el.notice.textContent = "An interlock is engaged, so the controller will refuse to start the fan. Check that any interlocked appliance is off.";
@@ -643,9 +662,8 @@
   async function request(path, optimisticSpeed) {
     if (optimisticSpeed !== undefined) {
       pendingSpeed = optimisticSpeed;
-      // A full-range step sequence is several sequential round trips; give it room
-      // before we give up on the optimistic display and fall back to reported state.
-      pendingUntil = Date.now() + 12000;
+      // Only until the server's own targetSpeed arrives, which is the next push.
+      pendingUntil = Date.now() + 3000;
       render();
     }
     try {

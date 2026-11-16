@@ -35,6 +35,13 @@ public sealed record FanSnapshot
     public int MaxSpeed { get; init; } = 5;
     public bool Running => Speed > 0;
     public bool DoorMoving { get; init; }
+
+    /// <summary>
+    /// The speed a command in progress is heading for, or null when nothing is in
+    /// flight. While the damper doors move the controller reports speed 0, so this is
+    /// the only way to tell what the fan is about to do.
+    /// </summary>
+    public int? TargetSpeed { get; init; }
     public bool Interlocked { get; init; }
     public int TimerMinutes { get; init; }
 
@@ -106,7 +113,13 @@ public sealed record FanSnapshot
         {
             if (!Online && ObservedAt is null) return "Waiting for the fan to answer";
             if (!Online) return "Fan not responding — showing last known state";
-            if (DoorMoving) return "Damper doors moving";
+            if (DoorMoving)
+                return TargetSpeed switch
+                {
+                    0 => "Damper doors closing",
+                    { } target => $"Damper doors opening, then speed {target}",
+                    null => "Damper doors moving",
+                };
             if (Interlocked) return "Interlock engaged — fan will not start";
 
             return Verdict switch
