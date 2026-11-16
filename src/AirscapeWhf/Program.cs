@@ -2,8 +2,24 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using AirscapeWhf.Automation;
 using AirscapeWhf.Fan;
+using AirscapeWhf.Hosting;
+
+if (args.Contains("--healthcheck")) return await ContainerSetup.HealthcheckAsync();
 
 var builder = WebApplication.CreateBuilder(args);
+
+var configDir = ContainerSetup.ConfigDir;
+ContainerSetup.AddConfigDirectory(builder.Configuration, configDir);
+
+if (string.IsNullOrWhiteSpace(builder.Configuration["Fan:Host"]))
+{
+    await Console.Error.WriteLineAsync(
+        $"No fan host configured. Set \"Fan\": {{ \"Host\": \"<controller IP>\" }} in " +
+        $"{Path.Combine(configDir, "appsettings.json")}, or the Fan__Host environment variable.");
+    return 2;
+}
+
+var listeners = ContainerSetup.ConfigureListeners(builder, configDir);
 
 builder.Services.Configure<FanOptions>(builder.Configuration.GetSection(FanOptions.Section));
 builder.Services.AddSingleton(TimeProvider.System);
@@ -23,6 +39,7 @@ builder.Services.ConfigureHttpJsonOptions(o =>
 });
 
 var app = builder.Build();
+app.Logger.LogInformation("Listening: {Listeners}", listeners);
 
 app.UseDefaultFiles();
 app.UseStaticFiles();
@@ -129,4 +146,8 @@ app.MapGet("/healthz", (FanStateStore store) => Results.Ok(new
     subscribers = store.SubscriberCount,
 }));
 
-app.Run();
+await app.RunAsync();
+return 0;
+
+/// <summary>Visible to WebApplicationFactory in the tests.</summary>
+public partial class Program;

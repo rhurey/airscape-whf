@@ -1,3 +1,14 @@
+# Everything site-specific lives in ./config (read-only) and state in ./data.
+# Before first start:
+#
+#   mkdir -p config data
+#   cp config.example/appsettings.json config/   # then set Fan:Host
+#   openssl rand -hex 32 > config/mcp-token      # enables /mcp
+#   sudo chown 1654:1654 data                    # the container's user
+#
+# For HTTPS, put fullchain.pem and privkey.pem in config/certs/ (see
+# deploy/renew-hook.sh). Without them the container serves HTTP only.
+
 services:
   airscape-whf:
     build: .
@@ -12,44 +23,13 @@ services:
       - "8080:8080"
       - "443:8443"
 
-    environment:
-      # --- the fan ---------------------------------------------------------
-      Fan__Host: "192.168.36.193"
-      Fan__PollIntervalSeconds: "20"
-      Fan__TimeoutSeconds: "6"
-      Fan__MaxSpeed: "5"
-
-      # --- persistence -----------------------------------------------------
-      # Lives on the bind mount below, so the rules survive a restart and you
-      # can read or back up the file directly.
-      Cooldown__Path: "/data/cooldown.json"
-
-      # --- listeners -------------------------------------------------------
-      ASPNETCORE_HTTP_PORTS: "8080"
-      ASPNETCORE_HTTPS_PORTS: "8443"
-
-      # Kestrel reads a PEM certificate and key directly -- no PFX conversion.
-      # These are read once at startup, so the container must be restarted after
-      # a renewal (see deploy/renew-hook.sh).
-      Kestrel__Certificates__Default__Path: "/certs/fullchain.cer"
-      Kestrel__Certificates__Default__KeyPath: "/certs/privatekey.cer"
-
-      Logging__LogLevel__Default: "Information"
-
     volumes:
+      - ./config:/config:ro
       - ./data:/data
-      # Point this at wherever your ACME pipeline drops the wildcard. Read-only:
-      # this container has no business writing to your PKI.
-      - ./certs:/certs:ro
 
-    healthcheck:
-      # Liveness only. The service is doing its job even when the fan is
-      # unreachable, so fan state deliberately does not fail the check.
-      test: ["CMD", "dotnet", "--info"]
-      interval: 60s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
+    # The healthcheck is defined in the image (the app checks its own /healthz).
+    # It is liveness only: the service is doing its job even when the fan is
+    # unreachable, so fan state deliberately does not fail it.
 
     read_only: true
     # The runtime wants a scratch directory even with a read-only root.
