@@ -159,30 +159,36 @@ even with a read-only root.
 ## Cooldown
 
 You run the fan to flush the house with cool night air. As the night goes on the
-outside air keeps dropping, and at some point you are no longer cooling the house
-so much as refrigerating it. Cooldown watches outside air temperature and eases
-the fan off as it falls.
+house keeps cooling, and at some point you are no longer cooling it so much as
+refrigerating it. Cooldown watches the **inside (house) temperature** and eases the
+fan off as it falls. The outside reading plays no part in it.
 
-Rules are a ladder — below this temperature, run no faster than that:
+Rules are a ladder — when the house is below this temperature, run no faster than
+that:
 
-    Below 62°  ->  Speed 2
-    Below 56°  ->  Off
+    Below 68°  ->  Speed 2
+    Below 65°  ->  Off
 
-One rung is the simple case ("stop below 58"); more rungs give you a gradual
-wind-down. Edit them in the UI; they're saved to `/data/cooldown.json`.
+One rung is the simple case ("stop when the house reaches 66"); more rungs give you
+a gradual wind-down. Edit them in the UI; they're saved to `/data/cooldown.json`.
 
 **One invariant governs the whole feature: it can only slow the fan down or stop
 it.** It never speeds the fan up and it never starts it. That is what makes it
-safe to leave switched on — a rule that could start a fan at 3am because the
-outside temperature blipped is a rule nobody would trust. If you want the fan
+safe to leave switched on — a rule that could start a fan at 3am because a
+temperature reading blipped is a rule nobody would trust. If you want the fan
 running again, you turn it on.
 
-**Once a step fires it latches**, and won't fire again until the temperature
-climbs back past its threshold plus a release margin (2°F by default). Without
-that, sitting at a threshold while the reading jitters by a degree would have the
-governor fighting you for control of the speed. With it, if you override the
-speed upward after a step has fired, your setting sticks. Steps re-arm on their
-own as it warms up, so the ladder is ready again by the next evening.
+**Once a step fires it latches**, and won't fire again until the house climbs back
+past its threshold plus a release margin (2°F by default). Without that, sitting at
+a threshold while the reading jitters by a degree would have the governor fighting
+you for control of the speed. With it, if you override the speed upward after a
+step has fired, your setting sticks. Steps re-arm on their own as the house warms
+up, so the ladder is ready again by the next evening.
+
+One consequence of triggering on the house temperature: if you start the fan when
+the house is *already* below a step that has not fired yet, the step fires straight
+away and slows or stops the fan. Start it again and it sticks, because the step is
+now latched. Lower the threshold if that bites.
 
 The governor **never acts on data it doesn't trust**: no reading, a stale
 snapshot, or an unreachable fan all mean it does nothing. It reads the same
@@ -193,7 +199,7 @@ step with a *higher* speed than a warmer one can never trigger, so the API says
 so instead of accepting it.
 
 The state machine is exercised in `tools/cooldown_check.py`, including a
-simulated night from 75°F down to 48°F and back.
+simulated night as the house cools and warms again.
 
 ## API
 
@@ -411,9 +417,6 @@ the whole upgrade.
   by host; the structure allows it, nothing implements it.
 - No history. The snapshot is instantaneous. Temperature and runtime trends
   would want a time-series store rather than this cache.
-- Cooldown triggers on outside air only. Triggering on inside temperature, or on
-  the difference between the two, would be a reasonable extension; the rule model
-  would need a sensor field.
 - No scheduling. "Run from 10pm" or "only on weeknights" belongs in Home
   Assistant against this API, not here.
 - No auth. Assumes a trusted LAN.

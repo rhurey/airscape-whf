@@ -435,7 +435,7 @@
       <button class="switch" id="cooldown-toggle" type="button"
               role="switch" aria-checked="false" aria-label="Enable cooldown"></button>
     </div>
-    <p class="preamble">As it gets colder outside, the fan eases off on its own. It never speeds up and never starts on its own.</p>
+    <p class="preamble">As the house cools down, the fan eases off on its own. It never speeds up and never starts on its own.</p>
     <div class="collapsible is-hidden" id="cooldown-body">
       <div class="rules" id="rules"></div>
       <button class="rule-add" id="rule-add" type="button">Add a step</button>
@@ -642,6 +642,10 @@
     renderSteps(s);
     renderMetrics(s);
     el.timer.textContent = fmtTimer(s.timerMinutes);
+    // On an idle fan the first timer hour starts it, so say so.
+    el.addHour.textContent =
+      s.speed === 0 && !s.doorMoving && typeof s.targetSpeed !== "number"
+        ? "Run for 1 hour" : "Add 1 hour";
 
     const bits = [];
     if (s.ipAddress) bits.push(s.ipAddress);
@@ -708,7 +712,7 @@
       temp.min = "20";
       temp.max = "100";
       temp.value = String(step.belowF);
-      temp.setAttribute("aria-label", `Temperature for step ${i + 1}`);
+      temp.setAttribute("aria-label", `House temperature for step ${i + 1}`);
       temp.addEventListener("input", () => {
         cooldown.steps[i].belowF = parseInt(temp.value, 10) || 0;
         scheduleSave();
@@ -750,28 +754,30 @@
     });
   }
 
+  // Cooldown rules act on the house (inside) temperature, so that is the
+  // reading the forecast quotes.
   function renderForecast() {
-    const outside = state && state.outsideTempF;
+    const house = state && state.houseTempF;
     if (!cooldown.enabled || cooldown.steps.length === 0) {
       el.forecast.textContent = "";
       return;
     }
-    if (typeof outside !== "number") {
+    if (typeof house !== "number") {
       el.forecast.className = "forecast is-idle";
-      el.forecast.textContent = "No outside reading, so nothing will fire.";
+      el.forecast.textContent = "No inside reading, so nothing will fire.";
       return;
     }
     if (!cooldown.next) {
       el.forecast.className = "forecast is-idle";
       el.forecast.textContent = state && state.speed > 0
-        ? `Outside is ${outside}\u00B0. Nothing left to fire tonight.`
-        : `Outside is ${outside}\u00B0. Rules apply once the fan is running.`;
+        ? `House is ${house}\u00B0. Nothing left to fire tonight.`
+        : `House is ${house}\u00B0. Rules apply once the fan is running.`;
       return;
     }
     const { belowF, speed } = cooldown.next;
     const what = speed === 0 ? "stops" : `eases to ${speed}`;
     el.forecast.className = "forecast";
-    el.forecast.textContent = `Next: ${what} below ${belowF}\u00B0 \u2014 it's ${outside}\u00B0 out now.`;
+    el.forecast.textContent = `Next: ${what} below ${belowF}\u00B0 \u2014 the house is ${house}\u00B0 now.`;
   }
 
   function renderCooldown() {

@@ -3,17 +3,17 @@ using System.Text.Json.Serialization;
 namespace AirscapeWhf.Automation;
 
 /// <summary>One rung of the ladder: below this temperature, run no faster than this.</summary>
-/// <param name="BelowF">Outside air temperature, in °F, at which this step applies.</param>
+/// <param name="BelowF">Inside (house) temperature, in °F, at which this step applies.</param>
 /// <param name="Speed">Speed to drop to. Zero means stop.</param>
 public sealed record CooldownStep(int BelowF, int Speed);
 
 /// <summary>
-/// Rules for easing the fan off as the outside air cools.
+/// Rules for easing the fan off as the house cools.
 /// <para>
 /// The governing invariant is that these rules can only ever <i>slow the fan down or
 /// stop it</i> — never speed it up, never start it. That is what makes the feature
 /// safe to leave switched on: a rule that could start a fan at 3am because the
-/// outside temperature blipped is a rule nobody would trust.
+/// temperature reading blipped is a rule nobody would trust.
 /// </para>
 /// </summary>
 public sealed record CooldownSettings
@@ -71,12 +71,12 @@ public sealed record CooldownSettings
     }
 
     /// <summary>The next step that will fire, for display. Null when nothing is pending.</summary>
-    public CooldownStep? Forecast(int? outsideF, int speed, IReadOnlySet<int> latched)
+    public CooldownStep? Forecast(int? houseF, int speed, IReadOnlySet<int> latched)
     {
-        if (!IsActive || outsideF is not { } outside || speed <= 0) return null;
+        if (!IsActive || houseF is not { } house || speed <= 0) return null;
 
         return Steps
-            .Where(s => outside >= s.BelowF && !latched.Contains(s.BelowF) && s.Speed < speed)
+            .Where(s => house >= s.BelowF && !latched.Contains(s.BelowF) && s.Speed < speed)
             .OrderByDescending(s => s.BelowF)
             .FirstOrDefault();
     }

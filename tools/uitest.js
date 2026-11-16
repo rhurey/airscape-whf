@@ -226,7 +226,8 @@ console.log("\n[11] cooldown: forecast reads from the server");
   await flush();
   t.push(base);
   check("names the next step", t.$("forecast").textContent.includes("eases to 2 below 62"), true);
-  check("quotes the current temperature", t.$("forecast").textContent.includes("59"), true);
+  check("quotes the house temperature", t.$("forecast").textContent.includes("the house is 69"), true);
+  check("does not quote outside", t.$("forecast").textContent.includes("59"), false);
 }
 
 await flush();
@@ -242,14 +243,37 @@ console.log("\n[12] cooldown: honest when nothing will fire");
 }
 
 await flush();
-console.log("\n[13] cooldown: no sensor means nothing can fire");
+console.log("\n[13] cooldown: no inside reading means nothing can fire");
 {
   const t = boot({ enabled: true, steps: [{ belowF: 60, speed: 0 }],
                    releaseMarginF: 2, maxSpeed: 5, next: null });
-  const { outsideTempF, ...noSensor } = base;
+  // Outside is still reported; only the house sensor is missing.
+  const { houseTempF, ...noHouse } = base;
   await flush();
-  t.push(noSensor);
-  check("says so plainly", t.$("forecast").textContent.includes("No outside reading"), true);
+  t.push(noHouse);
+  check("says so plainly", t.$("forecast").textContent.includes("No inside reading"), true);
+}
+
+await flush();
+console.log("\n[13b] cooldown: an outside reading alone is not enough, and is not quoted");
+{
+  const t = boot({ enabled: true, steps: [{ belowF: 60, speed: 0 }],
+                   releaseMarginF: 2, maxSpeed: 5, next: null });
+  await flush();
+  t.push({ ...base, outsideTempF: 40 });
+  check("quotes the house", t.$("forecast").textContent.includes("House is 69"), true);
+  check("ignores outside", t.$("forecast").textContent.includes("40"), false);
+  check("preamble talks about the house",
+        t.dom.window.document.querySelector(".preamble").textContent.includes("house cools"), true);
+}
+
+console.log("\n[17] timer button says it will start an idle fan");
+{
+  const t = boot();
+  t.push({ ...base, speed: 0, running: false });
+  check("idle label", t.$("add-hour").textContent, "Run for 1 hour");
+  t.push({ ...base, speed: 2 });
+  check("running label", t.$("add-hour").textContent, "Add 1 hour");
 }
 
 console.log("\n[15] starting from off: target holds through the door window");

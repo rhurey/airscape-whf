@@ -89,7 +89,7 @@ app.MapGet("/api/cooldown", (CooldownStore store, CooldownGovernor governor, Fan
 {
     var settings = store.Current;
     var snapshot = state.Current;
-    var next = settings.Forecast(snapshot.OutsideTempF, snapshot.Speed, governor.Latched);
+    var next = settings.Forecast(snapshot.HouseTempF, snapshot.Speed, governor.Latched);
 
     return Results.Ok(new
     {

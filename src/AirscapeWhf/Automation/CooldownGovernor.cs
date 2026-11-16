@@ -4,12 +4,12 @@ using Microsoft.Extensions.Options;
 namespace AirscapeWhf.Automation;
 
 /// <summary>
-/// Watches outside air temperature and eases the fan off as it falls.
+/// Watches the inside (house) temperature and eases the fan off as it falls.
 /// <para>
 /// One invariant governs everything here: <b>this can only slow the fan down or stop
 /// it.</b> It never speeds the fan up and never starts it. That is what makes the
 /// feature safe to leave switched on — a rule that could start a fan at 3am because
-/// the outside temperature blipped is a rule nobody would trust.
+/// a temperature reading blipped is a rule nobody would trust.
 /// </para>
 /// <para>
 /// The second piece is the latch. Once a step has fired it will not fire again until
@@ -72,7 +72,7 @@ public sealed class CooldownGovernor : BackgroundService
         var settings = _settings.Current;
         if (!settings.IsActive)
         {
-            _log.LogDebug("Cooldown is disabled, exitinng.");
+            _log.LogDebug("Cooldown is disabled; nothing to do.");
             return;
         }
 
@@ -112,8 +112,8 @@ public sealed class CooldownGovernor : BackgroundService
 
         _log.LogInformation(
             firing.Speed == 0
-                ? "Inside air is {Outside}°, below the {Threshold}° step — stopping the fan."
-                : "Inside air is {Outside}°, below the {Threshold}° step — easing from {From} to {To}.",
+                ? "House is {Inside}°, below the {Threshold}° step — stopping the fan."
+                : "House is {Inside}°, below the {Threshold}° step — easing from {From} to {To}.",
             temp, firing.BelowF, snapshot.Speed, firing.Speed);
 
         _queue.Enqueue(new FanIntent.SetSpeed(firing.Speed));
