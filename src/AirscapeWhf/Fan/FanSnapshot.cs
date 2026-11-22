@@ -163,6 +163,14 @@ public sealed record FanSnapshot
         };
     }
 
+    /// <summary>
+    /// Whether this reading describes the fan as it is now, rather than as it was when
+    /// it last answered. The store keeps the last good reading after the fan goes quiet,
+    /// so anything that acts on or publishes the values has to check this first.
+    /// </summary>
+    public bool IsFresh(int pollIntervalSeconds) =>
+        Online && ObservedAt is not null && AgeSeconds <= Math.Max(60, pollIntervalSeconds * 3);
+
     /// <summary>Re-stamps age without touching the reading, for serving cached state.</summary>
     public FanSnapshot WithAge(DateTimeOffset now) => this with
     {

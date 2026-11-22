@@ -5,6 +5,8 @@ using AirscapeWhf.Automation;
 using AirscapeWhf.Fan;
 using AirscapeWhf.Hosting;
 using AirscapeWhf.Mcp;
+using AirscapeWhf.Metrics;
+using Microsoft.Extensions.Options;
 
 if (args.Contains("--healthcheck")) return await ContainerSetup.HealthcheckAsync();
 
@@ -66,6 +68,12 @@ var json = new JsonSerializerOptions(JsonSerializerDefaults.Web)
 };
 
 app.MapGet("/api/status", (FanService fan) => Results.Ok(fan.GetStatus()));
+
+// Prometheus scrape target. Reads the same cached snapshot as /api/status, so a
+// scraper costs the controller nothing. Open like the rest of the REST API.
+app.MapGet("/metrics", (FanService fan, IOptions<FanOptions> options) =>
+    Results.Text(PrometheusMetrics.Render(fan.GetStatus(), options.Value.PollIntervalSeconds),
+        PrometheusMetrics.ContentType));
 
 // Server-sent events. One poller feeds every connected browser; adding a tab costs
 // this process a channel and costs the fan nothing.
