@@ -22,6 +22,16 @@ internal sealed class FakeFan : IFanClient
     /// <summary>False models firmware that queues speed commands during door travel.</summary>
     public bool IgnoreSpeedCommandsDuringDoors { get; set; } = true;
 
+    // Sensor and nameplate values, reported verbatim on every read. Null means the
+    // controller doesn't send the field, as on a fan without the sensor package.
+    public int? HouseTempF { get; set; }
+    public int? AtticTempF { get; set; }
+    public int? OutsideTempF { get; set; }
+    public int? PowerWatts { get; set; }
+    public int? Cfm { get; set; }
+    public string? Model { get; set; }
+    public string? SoftwareVersion { get; set; }
+
     public List<(FanCommand Command, bool DuringDoors)> Commands { get; } = new();
     public int StatusReads { get; private set; }
 
@@ -70,5 +80,12 @@ internal sealed class FakeFan : IFanClient
     {
         FanSpeed = DoorsMoving ? 0 : Speed,
         DoorInProcess = DoorsMoving ? 1 : 0,
+        HouseTempF = HouseTempF,
+        AtticTempF = AtticTempF,
+        OutsideTempF = OutsideTempF,
+        PowerWatts = PowerWatts,
+        Cfm = Cfm,
+        Model = Model,
+        SoftwareVersion = SoftwareVersion,
     };
 }

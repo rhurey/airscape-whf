@@ -239,6 +239,7 @@ simulated night as the house cools and warms again.
 | `GET` | `/api/cooldown` | Current rules, plus which step fires next |
 | `PUT` | `/api/cooldown` | Replace the rules |
 | `GET` | `/healthz` | Liveness |
+| `GET` | `/metrics` | Prometheus scrape target (see below) |
 | `POST` | `/mcp` | MCP server, bearer token required (see below) |
 
 Commands return `202 Accepted`. They are queued, not synchronous (see below). While
@@ -246,7 +247,8 @@ one is in flight the snapshot carries `targetSpeed`, the speed it is heading for
 which is the only way to tell what the fan is about to do while the damper doors
 make the controller report 0. It is absent once the fan has arrived.
 
-The REST API and UI have no auth and assume a trusted LAN. Only `/mcp` is gated.
+The REST API, `/metrics` and the UI have no auth and assume a trusted LAN. Only
+`/mcp` is gated.
 
 ## MCP
 
@@ -293,6 +295,45 @@ Auth is an ordinary ASP.NET Core authentication scheme plus a policy named `Mcp`
 (`src/AirscapeWhf/Mcp/McpSetup.cs`). Moving to OAuth2 with Entra ID later means
 registering JwtBearer and pointing that policy at it. The endpoint and tools stay
 as they are.
+
+## Prometheus
+
+`GET /metrics` serves the cached snapshot in the Prometheus text format (0.0.4).
+Like the MCP tools, it reads the same state as `/api/status`, so scraping it costs
+the controller nothing. It needs no token, and works whether MCP is enabled or not.
+
+| Metric | Labels | Value |
+| --- | --- | --- |
+| `airscape_up` | | 1 if the reading is fresh, otherwise 0. Always present |
+| `airscape_last_reading_age_seconds` | | Seconds since the controller last answered. Present once it has answered at all |
+| `airscape_temperature_fahrenheit` | `sensor="outside"`, `"inside"`, `"attic"` | Whole °F, as the controller reports it |
+| `airscape_fan_speed` | | Reported speed. Reads 0 while the damper doors move |
+| `airscape_fan_power_watts` | | Fan power draw |
+| `airscape_fan_airflow_cfm` | | Airflow |
+| `airscape_info` | `model`, `software_version` | Always 1 |
+
+A reading is fresh when the fan is online and it is no older than
+`max(60, 3 × PollIntervalSeconds)` seconds (the same rule the cooldown governor
+uses before acting). **When it is not fresh, only `airscape_up 0` and the age are
+exported.** The service keeps the last good reading after the fan goes quiet;
+exporting it would draw a flat line at the last temperature, which is wrong data
+that looks right. Dropping the series lets Prometheus mark them stale, so the
+graph shows a gap instead. A sensor the controller doesn't report is left out the
+same way.
+
+Temperatures stay in Fahrenheit, the controller's native unit, so `promtool check
+metrics` warns that it is not a base unit. That warning is expected.
+
+```yaml
+- job_name: airscape
+  scrape_interval: 30s
+  static_configs:
+    - targets: ['fan.home.example.com:8080']
+```
+
+Thirty seconds is enough: the service refreshes every 20 s and the values are whole
+numbers. Alert on `airscape_up == 0 or absent(airscape_up)` to notice the fan
+dropping off the network.
 
 ## How it works
 
@@ -495,9 +536,10 @@ commands during door travel instead of ignoring them.
 ## Status
 
 `dotnet test` covers the door-aware stepper against a scripted fake controller,
-the cooldown forecast, and the MCP endpoint end to end (auth, tool list, read-only
-mode, validation errors). `docker build --target test .` runs the same suite, and
-the default image build runs it too.
+the cooldown forecast, the `/metrics` rendering and staleness rules, and the MCP
+endpoint end to end (auth, tool list, read-only mode, validation errors).
+`docker build --target test .` runs the same suite, and the default image build
+runs it too.
 
 The front end is tested by `tools/uitest.js`, which drives it under jsdom across
 sensor-less fans, stale state, door travel, larger models, and the cooldown editor
@@ -510,8 +552,8 @@ the verbatim hardware capture and adversarial variants via
 
 - Single fan per container. Multiple fans would mean keying the store and client
   by host; the structure allows it, nothing implements it.
-- No history. The snapshot is instantaneous. Temperature and runtime trends
-  would want a time-series store rather than this cache.
+- No history in the service. The snapshot is instantaneous; trends come from
+  scraping `/metrics` into Prometheus, not from this cache.
 - No scheduling. "Run from 10pm" or "only on weeknights" belongs in Home
   Assistant against this API, not here.
 - No auth on the REST API or UI; they assume a trusted LAN. `/mcp` uses a static

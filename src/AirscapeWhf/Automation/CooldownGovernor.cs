@@ -79,8 +79,7 @@ public sealed class CooldownGovernor : BackgroundService
         // Never act on a reading we don't trust. A stale snapshot is the fan's last
         // known state, not its current one, and acting on it could stop a fan that
         // someone just turned on.
-        var staleAfter = Math.Max(60, _fanOptions.PollIntervalSeconds * 3);
-        if (!snapshot.Online || snapshot.AgeSeconds > staleAfter) return;
+        if (!snapshot.IsFresh(_fanOptions.PollIntervalSeconds)) return;
         if (snapshot.HouseTempF is not { } temp) return;
 
         CooldownStep? firing;
