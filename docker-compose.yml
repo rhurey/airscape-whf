@@ -17,7 +17,7 @@ services:
       Fan__Host: "192.168.36.193"
       Fan__PollIntervalSeconds: "20"
       Fan__TimeoutSeconds: "6"
-      Fan__MaxSpeed: "5"
+      Fan__MaxSpeed: "7"
 
       # --- persistence -----------------------------------------------------
       # Lives on the bind mount below, so the rules survive a restart and you
@@ -31,8 +31,8 @@ services:
       # Kestrel reads a PEM certificate and key directly -- no PFX conversion.
       # These are read once at startup, so the container must be restarted after
       # a renewal (see deploy/renew-hook.sh).
-      Kestrel__Certificates__Default__Path: "/certs/fullchain.cer"
-      Kestrel__Certificates__Default__KeyPath: "/certs/privatekey.cer"
+      Kestrel__Certificates__Default__Path: "/certs/fullchain.pem"
+      Kestrel__Certificates__Default__KeyPath: "/certs/privatekey.pem"
 
       Logging__LogLevel__Default: "Information"
 
@@ -40,7 +40,7 @@ services:
       - ./data:/data
       # Point this at wherever your ACME pipeline drops the wildcard. Read-only:
       # this container has no business writing to your PKI.
-      - ./certs:/certs:ro
+      - /etc/ssl/local:/certs:ro
 
     healthcheck:
       # Liveness only. The service is doing its job even when the fan is
